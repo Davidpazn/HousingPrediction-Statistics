@@ -6,4 +6,4 @@ Predict London's real estate prices based on classic statistical methods using R
 
 ## License
 
-This repository is licensed under ---- License. See LICENSE for details.
+This repository is licensed under MIT License. See LICENSE for details.
