@@ -1,0 +1,392 @@
+---
+title: "London Housing Prices"
+author: "David Pacheco, 1565824"
+date: "6/5/2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, comment = NA)
+```
+
+
+```{r load packages}
+require('combinat')
+require('tseries')
+require('ggplot2')
+require('reshape2')
+require('outliers')
+require('forecast')
+require('dplyr')
+require('boot')
+# install.packages('MSwM')
+require('MSwM')
+require('strucchange')
+require('zoo')
+require('moments')
+```
+
+
+```{r read data}
+# https://www.kaggle.com/justinas/housing-in-london
+
+monthly_housing_data <- read.csv(file='housing_in_london_monthly_variables.csv')
+# yearly_housing_data  <- read.csv(file='housing_in_london_yearly_variables.csv')
+```
+
+
+```{r explore data}
+View(monthly_housing_data)
+# View(yearly_housing_data)
+
+```
+
+
+
+```{r london housing index}
+# every point is calculated by weighting the average of house prices by the
+# number of them that were sold at that price.
+
+x <- monthly_housing_data[monthly_housing_data['borough_flag'] == 1, c('area')]
+df <- monthly_housing_data[monthly_housing_data['area'] == x,
+                           c('date', 'area', 'houses_sold', "average_price")]
+df <- df %>% group_by(date) %>% filter (!is.na(houses_sold))
+
+
+houses_by_month <- aggregate(houses_sold ~ date, df, as.integer)
+houses_by_month <- matrix(houses_by_month)[2][[1]]
+london_houses_sold <- monthly_housing_data[monthly_housing_data['area']
+                                           == 'london', c('houses_sold')]
+
+london_houses_sold <- london_houses_sold[!is.na(london_houses_sold)]
+weight <- houses_by_month / london_houses_sold
+w <- melt(weight)
+w <- subset(w, select=-Var2)
+w <- w[order(w$Var1),]
+w <- subset(w, select=-Var1)
+
+df <- df[order(df$date), ]
+london_index <- df
+london_index$weighted_average <- df$average_price * w
+
+cols <- c('date', 'weighted_average')
+london_index <- london_index[, cols]
+london_index <- aggregate(london_index$weighted_average,
+                          by=list(date=london_index$date), FUN=sum)
+
+# set index and remove unnecessary columns
+rownames(london_index) <- london_index$date
+london_index <- subset(london_index, select= -date)
+colnames(london_index) <- c('weighted_average')
+View(london_index)
+```
+
+
+```{r plot newdf}
+plot(london_index$weighted_average ~ as.Date(rownames(london_index)),
+     xlab="Years", ylab="Average London House Price", type='l')
+```
+
+```{r check whether there are any correlations in data}
+nr <- 10000
+st <- numeric(nr)
+st2 <- numeric(nr)
+st3 <- numeric(nr)
+st4 <- numeric(nr)
+st5 <- numeric(nr)
+
+sttrue <- acf(london_index$weighted_average, plot=FALSE)$acf[2]
+sttrue2 <- acf(london_index$weighted_average, plot=FALSE)$acf[3]
+sttrue3 <- acf(london_index$weighted_average, plot=FALSE)$acf[4]
+sttrue4 <- acf(london_index$weighted_average, plot=FALSE)$acf[5]
+sttrue5 <- acf(london_index$weighted_average, plot=FALSE)$acf[6]
+
+n <- length(london_index$weighted_average)
+for (i in 1:nr) {
+  d <- sample(london_index$weighted_average,  n)
+  st[i] <- acf(d, plot=FALSE)$acf[2]
+  st2[i] <- acf(d, plot=FALSE)$acf[3]
+  st3[i] <- acf(d, plot=FALSE)$acf[4]
+  st4[i] <- acf(d, plot=FALSE)$acf[5]
+  st5[i] <- acf(d, plot=FALSE)$acf[6]
+}
+
+length(st[st >= sttrue])/nr
+length(st2[st2 >= sttrue2])/nr
+length(st3[st3 >= sttrue3])/nr
+length(st4[st4 >= sttrue4])/nr
+length(st5[st5 >= sttrue5])/nr
+
+
+
+london_ts <- ts(london_index$weighted_average, frequency = 12, start = c(1995, 1))
+plot(decompose(london_ts))
+
+ac <- acf(london_index$weighted_average, plot=FALSE)
+plot(ac, main="Autocorrelation of time series")
+```
+
+
+```{r make data stationary for arima model}
+# Stabilize variance:
+# check whether we have heterocedasticity or not
+# plot(rollapply(london_index$weighted_average, width=3, FUN=sd))
+log_avg <- log(london_index$weighted_average)  # removal of heterocedasticity
+# Box-Cox transformation can also work
+# log_avg
+
+# Stabilize mean:
+avg_price_diff <- diff(log_avg)  # Linear tendency, then just one difference
+
+dfuller_test <- adf.test(avg_price_diff)
+
+
+dfuller_test
+
+
+plot(avg_price_diff ~ as.Date(head(aux$date, length(avg_price_diff))),
+     xlab="Years", ylab="Stationary Average London House Price", type='l')
+```
+
+
+```{r permutation test on stationary data}
+nr <- 10000
+st <- numeric(nr)
+st2 <- numeric(nr)
+st3 <- numeric(nr)
+st4 <- numeric(nr)
+st5 <- numeric(nr)
+
+sttrue <- acf(avg_price_diff, plot=FALSE)$acf[2]
+sttrue2 <- acf(avg_price_diff, plot=FALSE)$acf[3]
+sttrue3 <- acf(avg_price_diff, plot=FALSE)$acf[4]
+sttrue4 <- acf(avg_price_diff, plot=FALSE)$acf[5]
+sttrue5 <- acf(avg_price_diff, plot=FALSE)$acf[6]
+
+n <- length(avg_price_diff)
+for (i in 1:nr) {
+  d <- sample(avg_price_diff,  n)
+  st[i] <- acf(d, plot=FALSE)$acf[2]
+  st2[i] <- acf(d, plot=FALSE)$acf[3]
+  st3[i] <- acf(d, plot=FALSE)$acf[4]
+  st4[i] <- acf(d, plot=FALSE)$acf[5]
+  st5[i] <- acf(d, plot=FALSE)$acf[6]
+}
+
+length(st[st >= sttrue])/nr
+length(st2[st2 >= sttrue2])/nr
+length(st3[st3 >= sttrue3])/nr
+length(st4[st4 >= sttrue4])/nr
+length(st5[st5 >= sttrue5])/nr
+
+
+```
+
+
+```{r chow test}
+aux <- london_index
+aux$date <- rownames(london_index)
+nums <- seq(1, length(aux$date), 1)
+# Chow test
+sctest(aux$weighted_average ~ nums, type="Chow", point=10)
+```
+```{r breakpooints}
+l <- length(london_index$weighted_average)
+tt <- 1:(l-1)
+
+brk <- breakpoints(ts(london_index$weighted_average[2:299]) ~
+                     london_index$weighted_average[1:298] + tt, h=55)
+summary(brk)
+```
+```{r plot with breakpoints}
+
+# Breakpoint at 172
+
+plot(london_index$weighted_average ~ as.Date(rownames(london_index)),
+     xlab="Years", ylab="Average London House Price with breakpoint")
+abline(v=c(as.Date(rownames(london_index)[171])), col="red", lwd=3, lty=2)
+```
+
+
+
+```{r check autocorrelation}
+# autocorrelation
+acf(avg_price_diff)
+
+# partial autocorrelation
+pacf(avg_price_diff)
+```
+
+
+```{r autoarima after last breakpoint stationary dataset}
+
+# After the acf and pacf plots, we can deduce a d=2 might work well for our
+# dataset.
+
+n <- length(tail(london_index$weighted_average, -171))
+london_autoarima <- auto.arima(tail(london_index$weighted_average, -171),
+                               ic='aic')  # d=1 based on acf and pacf
+
+summary(london_autoarima)  # ARIMA(3, 1, 0)
+
+# london_autoarima
+plot(london_autoarima$residuals)
+
+# Check residuals are stationary with Dickey fuller test:
+dfuller_test_residuals <- adf.test(london_autoarima$residuals)
+dfuller_test_residuals  # < 0.05, hence stationary, reject null-hypothesis
+
+# Normality test of the residuals:
+shapiro.test(london_autoarima$residuals)  # > 0.05, hence, normally distributed
+                                          # accept Null-Hypothesis
+
+# Forecast based on autoarima
+london_pred <- forecast(london_autoarima)
+# mean prediction
+london_pred$mean
+
+# prediction residuals
+plot(london_pred$residuals)
+
+plot(london_pred, main="ARIMA Forecast", ylab='weighted_avgs')
+```
+
+
+```{r original series vs arima}
+# ARIMA(3, 1, 0)
+hist(london_autoarima$residuals, breaks=15)
+
+plot(london_autoarima$x, col='red', main='Arima and London index series')
+lines(fitted(london_autoarima), col='blue')
+```
+
+
+```{r accuracy analysis}
+refit <- Arima(london_index$weighted_average, model=london_autoarima)
+accuracy(refit)  # MPE of -0.1968881 looks good
+
+# ME (Mean Error):                                   288.6474
+# RMSE (Root Mean Squared Error):                    5372.831
+# MAE (Mean Absolute Error):                         3700.571
+# MPE (Mean Percentage Error):                     -0.1968881
+# MAPE (Mean Absolute Percentage Error):             1.289505
+# MASE (Mean Absolute Scaled Error):                0.9283399
+# ACF1 (First-Order Autocorrelation Coefficient):  0.06029688
+```
+
+```{r jackknife for skewness and kurtosis}
+# Lets try with all the data, the data used for the test
+# and the stationary data.
+
+jackknife_x <- function(x) {
+    sk <- skewness(x)
+    ku <- kurtosis(x)
+    n <- length(x)
+
+    thetask <- numeric(n)
+    pseusk <- numeric(n)
+    thetaku <- numeric(n)
+    pseuku <- numeric(n)
+
+    for (j in 1:n) {
+      thetask[j] <- skewness(x[-j])
+      pseusk[j] <- n*sk -(n-1)*thetask[j]
+
+      thetaku[j] <- kurtosis(x[-j])
+      pseuku[j] <- n*ku -(n-1)*thetaku[j]
+    }
+    values <- list("skewness" = mean(pseusk),
+                   "se_skewness" = sd(pseusk)/sqrt(n),
+
+                   "kurtosis" = mean(pseuku),
+                   "se_kurtosis" = sd(pseuku)/sqrt(n))
+    return(values)
+}
+
+x <- london_autoarima$residuals
+jackknife_x(x)
+
+shapiro.test(x)
+```
+
+
+
+```{r bootsrapping the residuals}
+
+# mean of dataset: mean(london_index$weighted_average)
+# arima residuals: london_autoarima$residuals
+# arima model: Y_t = \beta_1Y_t-1 + ... + \beta_0Y_0 + \eps_t
+# mean is called drift when d=1
+# (1 + thetaB_1 + --- + theta_qB^q)eps_t
+# X_i+1 = X_i + eps_i
+# hat(y_t)  = yt-1 + drift + ar1*inc(y_t-1) + ar2*inc(yt-2) + ar3*inc(yt-3) + eps_t
+
+x <- tail(london_index$weighted_average, -171)
+
+log_x <- log(x)  # removal of heterocedasticity
+                 # Box-Cox transformation can also work
+
+# Stabilize mean:
+diff_x <- diff(log_x)  # Linear tendency, then just one difference
+
+dfuller_test <- adf.test(diff_x)
+
+fit <- Arima(diff_x, order=c(3, 1, 0), method="ML")
+res <- fit$residuals
+# res <- fit$resid
+# fit$coef[1]: ar1
+# fit$coef[2]: ar2
+# fit$coef[3]: ar3
+# fit$coef[4]: drift
+
+nb <- 1000
+mu <- numeric(nb)
+phi1 <- numeric(nb); phi2 <- numeric(nb); phi3 <- numeric(nb)
+iters <- 30
+xb <- numeric(iters)
+print(xb)
+
+for(j in 1:nb) {
+  xb[1] <- diff_x[1];  xb[2] <- diff_x[2];
+  xb[3] <- diff_x[3]; xb[4] <- diff_x[4]
+  # print("XB")
+  # print(xb)
+  for (i in 5:iters) {
+    r <- sample(res[5:iters], 1, replace=T)
+
+    xb[i] <- xb[i-1] +
+             fit$coef["ar1"]*(xb[i-1] - xb[i-2]) +
+             fit$coef["ar2"]*(xb[i-2] - xb[i-3]) +
+             fit$coef["ar3"]*(xb[i-3] - xb[i-4]) +
+             r
+
+    fit <- Arima(xb, order=c(3, 1, 0), method="ML")
+    mu[j] <- mean(xb)
+    phi1[j] <- fit$coef["ar1"]; phi2[j] <- fit$coef["ar2"];
+    phi3[j] <- fit$coef["ar3"];
+  }
+}
+```
+
+
+```{r bootstrap 95% CI of mu}
+quantile(mu,   c(0.025, 0.975))
+hist(mu, breaks=20)
+abline(v=mean(diff_x), col='red')
+
+quantile(phi1, c(0.025, 0.975))
+hist(phi1)
+abline(v=london_autoarima$coef["ar1"], col='red')
+
+quantile(phi2, c(0.025, 0.975))
+hist(phi2)
+abline(v=london_autoarima$coef["ar2"], col='red')
+
+quantile(phi3, c(0.025, 0.975))
+hist(phi3)
+abline(v=london_autoarima$coef["ar3"], col='red')
+london_autoarima$coef
+```
